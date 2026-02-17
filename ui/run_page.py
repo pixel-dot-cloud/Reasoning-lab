@@ -9,10 +9,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QFrame,
+    QListWidget,
+    QListWidgetItem,
 )
 from PySide6.QtGui import QFont, QTextCursor
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
 from pipeline.controller import PipelineThread
+from pipeline.persistence import list_chats, save_chat, delete_chat, new_chat_record
 from ui.styles import get_theme, DEFAULT_THEME
 
 
@@ -25,7 +28,9 @@ class RunPage(QWidget):
         self._streaming_final = False
         self._final_buffer = ""
         self._theme = get_theme(DEFAULT_THEME)
-        self._chat_history = []  # [{"role": "user"|"bot", "text": "..."}]
+        self._chat_history = []
+        self._current_chat = None
+        self._saved_chats = []
 
         layout = QVBoxLayout()
         layout.setSpacing(6)
@@ -33,21 +38,66 @@ class RunPage(QWidget):
 
         # --- Top bar ---
         top_bar = QHBoxLayout()
+
         self.back_btn = QPushButton("Back")
         self.back_btn.setObjectName("backBtn")
         self.back_btn.clicked.connect(
-            lambda: self.stack.setCurrentWidget(self.stack.model_select)
+            lambda: self.stack.setCurrentWidget(self.stack.home)
         )
         top_bar.addWidget(self.back_btn)
+
+        self.chats_btn = QPushButton("\u2630 Chats")
+        self.chats_btn.setObjectName("chatsBtn")
+        self.chats_btn.setCheckable(True)
+        self.chats_btn.clicked.connect(self._toggle_chats_panel)
+        top_bar.addWidget(self.chats_btn)
+
+        self.new_chat_btn = QPushButton("+ New Chat")
+        self.new_chat_btn.setObjectName("newChatBtn")
+        self.new_chat_btn.clicked.connect(self._new_chat)
+        top_bar.addWidget(self.new_chat_btn)
+
         top_bar.addStretch()
 
-        self.mode_label = QLabel("")
+        self.mode_label = QLabel("No models selected — click 'Select Models'")
         self.mode_label.setObjectName("modeLabel")
         top_bar.addWidget(self.mode_label)
+
+        self.models_btn = QPushButton("Select Models")
+        self.models_btn.setObjectName("modelsBtn")
+        self.models_btn.clicked.connect(
+            lambda: self.stack.setCurrentWidget(self.stack.model_select)
+        )
+        top_bar.addWidget(self.models_btn)
+
         layout.addLayout(top_bar)
 
-        # --- Splitter: Chat (left) + Reasoning (right) ---
+        # --- Main splitter: Chats panel | Chat area | Reasoning panel ---
         self.splitter = QSplitter(Qt.Horizontal)
+
+        # Chats history side panel
+        self.chats_panel = QFrame()
+        self.chats_panel.setObjectName("chatsPanel")
+        chats_panel_layout = QVBoxLayout()
+        chats_panel_layout.setContentsMargins(4, 4, 4, 4)
+        chats_panel_layout.setSpacing(4)
+
+        chats_header = QLabel("History")
+        chats_header.setObjectName("reasoningHeader")
+        chats_panel_layout.addWidget(chats_header)
+
+        self.chats_list = QListWidget()
+        self.chats_list.setObjectName("chatsList")
+        self.chats_list.itemClicked.connect(self._open_chat_from_panel)
+        chats_panel_layout.addWidget(self.chats_list, 1)
+
+        self.delete_chat_btn = QPushButton("Delete")
+        self.delete_chat_btn.clicked.connect(self._delete_chat_from_panel)
+        chats_panel_layout.addWidget(self.delete_chat_btn)
+
+        self.chats_panel.setLayout(chats_panel_layout)
+        self.chats_panel.setVisible(False)
+        self.splitter.addWidget(self.chats_panel)
 
         # Chat area
         self.chat_area = QTextEdit()
@@ -75,7 +125,7 @@ class RunPage(QWidget):
         reasoning_frame.setLayout(reasoning_layout)
         self.splitter.addWidget(reasoning_frame)
 
-        self.splitter.setSizes([500, 400])
+        self.splitter.setSizes([0, 500, 400])
         layout.addWidget(self.splitter, 1)
 
         # --- Status ---
@@ -83,7 +133,7 @@ class RunPage(QWidget):
         self.status_label.setObjectName("statusLabel")
         layout.addWidget(self.status_label)
 
-        # --- Input bar (ChatGPT-style) ---
+        # --- Input bar ---
         input_bar = QHBoxLayout()
         input_bar.setSpacing(6)
 
@@ -107,12 +157,15 @@ class RunPage(QWidget):
         layout.addLayout(input_bar)
         self.setLayout(layout)
 
+    # ------------------------------------------------------------------ theme
+
     def set_theme(self, theme):
         self._theme = theme
         self._rebuild_chat()
 
-    def set_config(self, config):
-        self.config = config
+    # ----------------------------------------------------------- mode helpers
+
+    def _update_mode_label(self, config):
         mode = config.get("mode", "single")
         if mode == "single":
             self.mode_label.setText(
@@ -123,8 +176,92 @@ class RunPage(QWidget):
         else:
             n = len(config.get("debate_models", []))
             self.mode_label.setText(
-                f"Debate: {n} models + {config.get('judge_model', '')} + {config.get('final_model', '')}"
+                f"Debate: {n} models + {config.get('judge_model', '')} + "
+                f"{config.get('final_model', '')}"
             )
+
+    # ----------------------------------------------------------- config / chat
+
+    def set_config(self, config):
+        self.config = config
+        self._update_mode_label(config)
+        self._new_chat()
+
+    def load_chat(self, chat: dict):
+        self._current_chat = chat
+        self.config = dict(chat["config"])
+        self.config["question"] = ""
+        self._chat_history = list(chat.get("messages", []))
+        self._final_buffer = ""
+        self._streaming_final = False
+        self._rebuild_chat()
+        self.reasoning_area.clear()
+        self.status_label.setText("Ready")
+        self._update_mode_label(self.config)
+
+    def _new_chat(self):
+        self._current_chat = None
+        self._chat_history = []
+        self._final_buffer = ""
+        self._streaming_final = False
+        self._rebuild_chat()
+        self.reasoning_area.clear()
+        self.status_label.setText("Ready")
+
+    # ----------------------------------------------------- chats side panel
+
+    def _toggle_chats_panel(self):
+        visible = self.chats_panel.isVisible()
+        if not visible:
+            self._reload_chats_panel()
+            self.chats_panel.setVisible(True)
+            self.splitter.setSizes([220, 480, 400])
+        else:
+            self.chats_panel.setVisible(False)
+            self.splitter.setSizes([0, 500, 400])
+        self.chats_btn.setChecked(not visible)
+
+    def _reload_chats_panel(self):
+        self._saved_chats = list_chats()
+        self.chats_list.clear()
+        for chat in self._saved_chats:
+            msgs = len(chat.get("messages", []))
+            updated = chat.get("updated_at", "")[:16].replace("T", " ")
+            mode = chat.get("config", {}).get("mode", "?")
+            display = (
+                f"{chat['name']}\n"
+                f"{updated}  \u2022  {msgs} msg{'s' if msgs != 1 else ''}  \u2022  {mode}"
+            )
+            item = QListWidgetItem(display)
+            item.setData(Qt.UserRole, chat["id"])
+            item.setSizeHint(QSize(0, 52))
+            self.chats_list.addItem(item)
+
+    def _open_chat_from_panel(self, item):
+        cid = item.data(Qt.UserRole)
+        chat = next((c for c in self._saved_chats if c["id"] == cid), None)
+        if chat:
+            self.load_chat(chat)
+
+    def _delete_chat_from_panel(self):
+        item = self.chats_list.currentItem()
+        if not item:
+            return
+        cid = item.data(Qt.UserRole)
+        chat = next((c for c in self._saved_chats if c["id"] == cid), None)
+        name = chat["name"] if chat else "this chat"
+        reply = QMessageBox.question(
+            self, "Delete Chat",
+            f"Delete '{name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            if self._current_chat and self._current_chat.get("id") == cid:
+                self._new_chat()
+            delete_chat(cid)
+            self._reload_chats_panel()
+
+    # -------------------------------------------------------------- chat HTML
 
     def _escape(self, text):
         return (
@@ -169,16 +306,15 @@ class RunPage(QWidget):
             lines.append(f"{role}: {msg['text']}")
         return "\n".join(lines)
 
+    # --------------------------------------------------------------- pipeline
+
     def run_pipeline(self):
         question = self.input_field.text().strip()
         if not question:
             return
         if not self.config:
-            QMessageBox.warning(self, "No Config", "Go back and select models first.")
+            QMessageBox.warning(self, "No Config", "Click 'Select Models' to set up models first.")
             return
-
-        self._chat_history.append({"role": "user", "text": question})
-        self._rebuild_chat()
 
         self.config["question"] = question
         self.config["chat_context"] = self.get_chat_context()
@@ -187,9 +323,18 @@ class RunPage(QWidget):
         self._final_buffer = ""
         self._streaming_final = False
 
+        self._chat_history.append({"role": "user", "text": question})
+        self._rebuild_chat()
+
+        if self._current_chat is None:
+            self._current_chat = new_chat_record(self.config)
+        self._current_chat["messages"] = list(self._chat_history)
+        save_chat(self._current_chat)
+
         self.send_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.back_btn.setEnabled(False)
+        self.models_btn.setEnabled(False)
         self.input_field.setEnabled(False)
         self.status_label.setText("Running pipeline...")
 
@@ -199,6 +344,7 @@ class RunPage(QWidget):
         self.thread.stage_complete.connect(self._on_stage_complete)
         self.thread.finished_signal.connect(self._on_finished)
         self.thread.error_signal.connect(self._on_error)
+        self.thread.finished.connect(self._on_thread_finished)
         self.thread.start()
 
     def stop_pipeline(self):
@@ -216,7 +362,6 @@ class RunPage(QWidget):
         self._final_buffer += text
         if not self._streaming_final:
             self._streaming_final = True
-        # Show streaming preview: rebuild history + current partial answer
         html = self._build_chat_html()
         bg = self._theme["bot_bubble_bg"]
         fg = self._theme["bot_bubble_fg"]
@@ -239,19 +384,41 @@ class RunPage(QWidget):
         self._reset_controls()
         self.status_label.setText("Done")
 
+        if self._current_chat is not None:
+            if len(self._current_chat["messages"]) == 1:
+                first_q = self._current_chat["messages"][0]["text"]
+                self._current_chat["name"] = first_q[:60].strip()
+            self._current_chat["messages"] = list(self._chat_history)
+            save_chat(self._current_chat)
+            if self.chats_panel.isVisible():
+                self._reload_chats_panel()
+
     def _on_error(self, error_msg):
         self._streaming_final = False
         if self._final_buffer:
-            self._chat_history.append({"role": "bot", "text": self._final_buffer + "\n[interrupted]"})
+            self._chat_history.append(
+                {"role": "bot", "text": self._final_buffer + "\n[interrupted]"}
+            )
             self._rebuild_chat()
         self._reset_controls()
         self.status_label.setText("Error")
+
+        if self._current_chat is not None and self._chat_history:
+            self._current_chat["messages"] = list(self._chat_history)
+            save_chat(self._current_chat)
+
         QMessageBox.critical(self, "Pipeline Error", error_msg)
+
+    def _on_thread_finished(self):
+        if self.thread is not None:
+            self._reset_controls()
+            self.status_label.setText("Stopped")
 
     def _reset_controls(self):
         self.send_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.back_btn.setEnabled(True)
+        self.models_btn.setEnabled(True)
         self.input_field.setEnabled(True)
         self.input_field.setFocus()
         self.thread = None

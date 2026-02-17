@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
 )
 from PySide6.QtCore import Qt, QThread, Signal
+from pipeline.persistence import load_settings, save_settings
 
 
 class ModelFetchThread(QThread):
@@ -38,6 +39,7 @@ class ModelSelectPage(QWidget):
     def __init__(self, stack):
         super().__init__()
         self.stack = stack
+        self._pending_settings = {}
 
         layout = QVBoxLayout()
         layout.setSpacing(12)
@@ -47,7 +49,7 @@ class ModelSelectPage(QWidget):
         port_layout.addWidget(QLabel("Ollama Port:"))
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1024, 65535)
-        self.port_spin.setValue(11435)
+        self.port_spin.setValue(11434)
         port_layout.addWidget(self.port_spin)
 
         self.refresh_btn = QPushButton("Refresh Models")
@@ -119,7 +121,7 @@ class ModelSelectPage(QWidget):
         # --- Buttons ---
         btn_layout = QHBoxLayout()
         back_btn = QPushButton("Back")
-        back_btn.clicked.connect(lambda: self.stack.setCurrentWidget(self.stack.home))
+        back_btn.clicked.connect(lambda: self.stack.setCurrentWidget(self.stack.run_page))
         btn_layout.addWidget(back_btn)
         btn_layout.addStretch()
 
@@ -132,7 +134,14 @@ class ModelSelectPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Always fetch if combos are empty (handles failed previous attempts)
+        s = load_settings()
+        if s.get("port"):
+            self.port_spin.setValue(s["port"])
+        if s.get("mode") == "debate":
+            self.debate_radio.setChecked(True)
+        else:
+            self.single_radio.setChecked(True)
+        self._pending_settings = s
         if self.reasoning_combo.count() == 0 and self.refresh_btn.isEnabled():
             self.fetch_models()
 
@@ -148,6 +157,26 @@ class ModelSelectPage(QWidget):
         self._fetch_thread.models_ready.connect(self._on_models_loaded)
         self._fetch_thread.error.connect(self._on_fetch_error)
         self._fetch_thread.start()
+
+    def _apply_settings(self, s):
+        def set_combo(combo, key):
+            val = s.get(key, "")
+            idx = combo.findText(val)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+
+        set_combo(self.reasoning_combo, "reasoning_model")
+        set_combo(self.single_judge_combo, "judge_model")
+        set_combo(self.single_final_combo, "final_model")
+        set_combo(self.judge_combo, "judge_model_debate")
+        set_combo(self.final_combo, "final_model_debate")
+
+        saved_debate = set(s.get("debate_models", []))
+        for i in range(self.debate_list.count()):
+            item = self.debate_list.item(i)
+            item.setCheckState(
+                Qt.Checked if item.text() in saved_debate else Qt.Unchecked
+            )
 
     def _on_models_loaded(self, models):
         self.refresh_btn.setEnabled(True)
@@ -171,6 +200,9 @@ class ModelSelectPage(QWidget):
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
             self.debate_list.addItem(item)
+
+        if self._pending_settings:
+            self._apply_settings(self._pending_settings)
 
     def _on_fetch_error(self, error_msg):
         self.refresh_btn.setEnabled(True)
@@ -207,6 +239,13 @@ class ModelSelectPage(QWidget):
                 "final_model": self.single_final_combo.currentText(),
                 "question": "",
             }
+            save_settings({
+                "port": self.port_spin.value(),
+                "mode": "single",
+                "reasoning_model": config["reasoning_model"],
+                "judge_model": config["judge_model"],
+                "final_model": config["final_model"],
+            })
         else:
             debate_models = self._get_checked_debate_models()
             if len(debate_models) < 2:
@@ -225,6 +264,13 @@ class ModelSelectPage(QWidget):
                 "final_model": self.final_combo.currentText(),
                 "question": "",
             }
+            save_settings({
+                "port": self.port_spin.value(),
+                "mode": "debate",
+                "debate_models": debate_models,
+                "judge_model_debate": config["judge_model"],
+                "final_model_debate": config["final_model"],
+            })
 
         self.stack.run_page.set_config(config)
         self.stack.setCurrentWidget(self.stack.run_page)

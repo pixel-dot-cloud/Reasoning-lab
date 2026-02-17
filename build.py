@@ -9,6 +9,5 @@ PyInstaller.__main__.run([
     "--name=ReasoningLab",
     "--onefile",
     "--windowed",
-    f"--add-data=assets{separator}assets",
     "--noconfirm",
 ])

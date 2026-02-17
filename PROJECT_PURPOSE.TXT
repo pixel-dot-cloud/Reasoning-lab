@@ -1,0 +1,278 @@
+📌 Projeto: Reasoning Lab (GUI Multi-Model com llama.cpp)
+🎯 Objetivo
+
+Construir uma aplicação Linux com interface gráfica moderna que execute um pipeline hierárquico de LLMs locais usando llama.cpp, com modelos obtidos via Ollama registry, estruturados em três papéis:
+
+Reasoning model (small)
+
+Judge model (validador/interprete)
+
+Final model (síntese final)
+
+A aplicação deve:
+
+Permitir seleção visual dos modelos
+
+Executar pipeline sequencial
+
+Mostrar discussão interna opcionalmente
+
+Exibir apenas a resposta final ao concluir
+
+Permitir experimentos de robustez interpretativa
+
+🧠 Arquitetura Conceitual
+Pipeline Hierárquico
+User Prompt
+    ↓
+Reasoning Model
+    ↓
+Judge Model
+    ↓
+Final Model
+    ↓
+User Output
+
+Papel de cada modelo
+1️⃣ Reasoning Model (menor, rápido)
+
+Resolve passo a passo
+
+Pode errar
+
+Foco: geração de raciocínio estruturado
+
+2️⃣ Judge Model
+
+Avalia consistência
+
+Detecta erros de modelagem
+
+Pode aceitar, corrigir ou reformular
+
+3️⃣ Final Model
+
+Consolida a decisão do judge
+
+Produz saída limpa e definitiva
+
+Remove ruído de raciocínio
+
+🖥️ Interface (GUI)
+
+Implementada em PySide6 (Qt6).
+
+Estrutura de Navegação
+1️⃣ Home Page
+
+Branding
+
+Botão "Start"
+
+2️⃣ Model Selection Page
+
+Dropdown para:
+
+Reasoning
+
+Judge
+
+Final
+
+Modelos listados via ollama list
+
+Persistência futura possível
+
+3️⃣ Execution Page
+
+Campo de prompt
+
+Botão "Run"
+
+Toggle:
+
+“Mostrar raciocínio”
+
+Área de output:
+
+Streaming em tempo real
+
+Ou apenas resposta final
+
+
+reasoning_lab_gui/
+│
+├── main.py
+│
+├── ui/
+│   ├── home_page.py
+│   ├── model_select_page.py
+│   └── run_page.py
+│
+├── pipeline/
+│   ├── controller.py
+│   └── llama_runner.py
+│
+├── assets/
+│
+└── models/   (opcional)
+
+
+
+
+🔧 Backend Técnico
+Execução de modelos
+
+llama.cpp via subprocess
+
+subprocess.Popen com streaming de stdout
+
+Execução em QThread para não bloquear UI
+
+Download de modelos
+
+Via:
+
+ollama pull <model>
+
+
+Uso de:
+
+
+ollama list --json
+
+
+Para popular dropdown automaticamente.
+
+
+🧩 Prompt Engineering
+Reasoning Prompt Template
+
+
+You are a reasoning model.
+Solve step by step.
+
+Question:
+{user_question}
+
+Answer:
+
+
+
+Judge Prompt Template
+
+
+
+
+You are a judge model.
+
+Question:
+{user_question}
+
+Reasoning attempt:
+{reasoning_output}
+
+Evaluate correctness and explain flaws if any.
+
+
+
+
+Final Prompt Template
+
+
+
+You are the final synthesis model.
+
+Question:
+{user_question}
+
+Judge analysis:
+{judge_output}
+
+Provide the final consolidated answer clearly and correctly.
+
+
+
+
+📦 Dependências
+Sistema
+
+Linux
+
+Python 3.10+
+
+llama.cpp compilado
+
+Ollama instalado
+
+
+
+Python
+pip install pyside6
+
+
+Opcional:
+
+pip install psutil
+pip install rich
+
+
+
+⚙️ Componentes Técnicos Críticos
+1️⃣ Threading
+
+Uso de:
+
+QThread
+
+Signals:
+
+update (stream parcial)
+
+finished (resultado final)
+
+Sem threading → UI trava.
+
+2️⃣ Streaming de stdout
+
+subprocess.Popen(...)
+for line in process.stdout:
+    callback(line)
+
+Permite:
+
+Visualização da “discussão”
+
+Simulação de debate entre modelos
+
+3️⃣ Controle de Exibição
+
+Se: toggle == True
+→ mostra raciocínio ao vivo
+
+Se:
+toggle == False
+
+
+→ suprime discussão e mostra apenas output final
+
+🧪 O Que Este Projeto Está Tentando Fazer
+
+Não é apenas uma GUI para LLM.
+
+Ele é:
+
+Um laboratório de epistemologia computacional.
+
+Objetivos experimentais:
+
+Detectar overthinking
+
+Detectar template overactivation
+
+Analisar propagação de erro hierárquico
+
+Testar robustez semântica entre modelos
+
+É uma plataforma experimental para investigar raciocínio artificial.
+

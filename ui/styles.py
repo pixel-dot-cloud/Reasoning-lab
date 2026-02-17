@@ -91,6 +91,7 @@ QLabel#reasoningHeader { color: #7287fd; font-weight: bold; font-size: 13px; pad
 QLabel#title { font-size: 36px; font-weight: bold; color: #7287fd; }
 QLabel#subtitle { font-size: 16px; color: #6c6f85; }
 QFrame#reasoningFrame { background-color: transparent; }
+QFrame#chatsPanel { background-color: transparent; border-right: 1px solid #bcc0cc; }
 """,
     },
 
@@ -186,6 +187,7 @@ QLabel#reasoningHeader { color: #6c5ce7; font-weight: bold; font-size: 13px; pad
 QLabel#title { font-size: 36px; font-weight: bold; color: #6c5ce7; }
 QLabel#subtitle { font-size: 16px; color: #6a6e80; }
 QFrame#reasoningFrame { background-color: transparent; }
+QFrame#chatsPanel { background-color: transparent; border-right: 1px solid #a8acba; }
 """,
     },
 
@@ -281,6 +283,7 @@ QLabel#reasoningHeader { color: #89b4fa; font-weight: bold; font-size: 13px; pad
 QLabel#title { font-size: 36px; font-weight: bold; color: #89b4fa; }
 QLabel#subtitle { font-size: 16px; color: #a6adc8; }
 QFrame#reasoningFrame { background-color: transparent; }
+QFrame#chatsPanel { background-color: transparent; border-right: 1px solid #45475a; }
 """,
     },
 
@@ -376,6 +379,7 @@ QLabel#reasoningHeader { color: #7c6ff0; font-weight: bold; font-size: 13px; pad
 QLabel#title { font-size: 36px; font-weight: bold; color: #7c6ff0; }
 QLabel#subtitle { font-size: 16px; color: #8a8aa0; }
 QFrame#reasoningFrame { background-color: transparent; }
+QFrame#chatsPanel { background-color: transparent; border-right: 1px solid #4a4a5a; }
 """,
     },
 }

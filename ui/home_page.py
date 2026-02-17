@@ -22,7 +22,7 @@ class HomePage(QWidget):
         start_btn = QPushButton("Start")
         start_btn.setFixedWidth(200)
         start_btn.clicked.connect(
-            lambda: self.stack.setCurrentWidget(self.stack.model_select)
+            lambda: self.stack.setCurrentWidget(self.stack.run_page)
         )
 
         # Theme selector

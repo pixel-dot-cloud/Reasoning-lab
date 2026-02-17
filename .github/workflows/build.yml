@@ -46,6 +46,9 @@ jobs:
       - name: Build
         run: python build.py
 
+      - name: Install NSIS
+        run: choco install nsis -y
+
       - name: Create installer
         run: makensis installer.nsi
 

@@ -50,28 +50,61 @@ Produce the final consolidated answer:
 
 # --- Debate mode prompts ---
 
-DEBATE_PROMPT = """\
-Analyze the following question carefully and provide structured reasoning \
-followed by a clear conclusion.
+DEBATE_ROUND1_PROMPT = """\
+You are participating in a structured debate. Analyze the question and present \
+your initial position with clear, step-by-step reasoning.
 {context}
 Question:
 {question}
+
+Present your initial position and reasoning:
+"""
+
+DEBATE_ROUND2_PROMPT = """\
+You are in round 2 of a structured debate. You have seen the other participants' \
+initial positions. Respond to their arguments: address their specific points, \
+challenge weaknesses in their reasoning, and defend or refine your own position.
+{context}
+Question:
+{question}
+
+Other participants' initial positions:
+{other_responses}
+
+Your initial position was:
+{own_response}
+
+Respond to the other arguments and defend/refine your position:
+"""
+
+DEBATE_CLOSING_PROMPT = """\
+You are delivering your final closing statement in a structured debate. \
+Review all arguments made across both rounds and give a concise, \
+well-reasoned closing statement of your position.
+{context}
+Question:
+{question}
+
+Full debate so far:
+{debate_history}
+
+Your closing statement:
 """
 
 DEBATE_JUDGE_PROMPT = """\
-You are a critical evaluator.
+You are a critical evaluator reviewing a structured multi-round debate.
 {context}
 Original question:
 {question}
 
-Model responses:
+Full debate (Round 1, Round 2, and Closing Statements):
 {responses}
 
 Tasks:
-1. Compare reasoning quality
-2. Identify logical flaws
-3. Identify missing considerations
-4. Select the best response
+1. Evaluate the quality of reasoning across all rounds
+2. Identify who made the strongest arguments and why
+3. Identify logical flaws or missing considerations
+4. Determine which position is best supported by the evidence
 5. Explain your decision clearly
 """
 
@@ -81,7 +114,7 @@ Respond in the same language as the original question.
 Original question:
 {question}
 
-Model responses:
+Full debate:
 {responses}
 
 Judge decision:
@@ -183,44 +216,89 @@ class PipelineThread(QThread):
         self.stage_complete.emit("final", final_answer)
         self.finished_signal.emit(final_answer)
 
-    # --- Debate mode: N debaters -> Judge evaluates -> Final synthesizes ---
+    # --- Debate mode: Round 1 -> Round 2 -> Closing -> Judge -> Final ---
 
     def _run_debate(self):
         cfg = self.config
         context = self._get_context_block()
-        responses = []
+        models = cfg["debate_models"]
 
-        # Stage 1: Debate
-        for model in cfg["debate_models"]:
+        # Round 1: each model states its initial position
+        round1 = {}
+        for model in models:
             if self._stopped:
                 return
-            self.token_update.emit(f"\n=== Debater: {model} ===\n\n")
-            answer = self._stream(model, DEBATE_PROMPT.format(
+            self.token_update.emit(f"\n=== Round 1 — {model} ===\n\n")
+            answer = self._stream(model, DEBATE_ROUND1_PROMPT.format(
                 question=cfg["question"], context=context
             ))
             if self._stopped:
                 return
-            responses.append(answer)
-            self.stage_complete.emit(f"debate:{model}", answer)
+            round1[model] = answer
+            self.stage_complete.emit(f"debate_r1:{model}", answer)
 
-        # Stage 2: Judge
-        formatted = "\n\n".join(
-            f"Response {i + 1}:\n{r}" for i, r in enumerate(responses)
-        )
+        # Round 2: each model reads the others' R1 and responds
+        round2 = {}
+        for model in models:
+            if self._stopped:
+                return
+            others = "\n\n".join(
+                f"{m}:\n{r}" for m, r in round1.items() if m != model
+            )
+            self.token_update.emit(f"\n\n=== Round 2 — {model} ===\n\n")
+            answer = self._stream(model, DEBATE_ROUND2_PROMPT.format(
+                question=cfg["question"],
+                context=context,
+                other_responses=others,
+                own_response=round1[model],
+            ))
+            if self._stopped:
+                return
+            round2[model] = answer
+            self.stage_complete.emit(f"debate_r2:{model}", answer)
+
+        # Closing statements: each model sees full R1 + R2 exchange
+        history_parts = []
+        for m in models:
+            history_parts.append(f"Round 1 — {m}:\n{round1[m]}")
+        for m in models:
+            history_parts.append(f"Round 2 — {m}:\n{round2[m]}")
+        debate_history = "\n\n".join(history_parts)
+
+        closing = {}
+        for model in models:
+            if self._stopped:
+                return
+            self.token_update.emit(f"\n\n=== Closing — {model} ===\n\n")
+            answer = self._stream(model, DEBATE_CLOSING_PROMPT.format(
+                question=cfg["question"],
+                context=context,
+                debate_history=debate_history,
+            ))
+            if self._stopped:
+                return
+            closing[model] = answer
+            self.stage_complete.emit(f"debate_closing:{model}", answer)
+
+        # Build the full debate transcript for judge and final
+        closing_parts = "\n\n".join(f"Closing — {m}:\n{s}" for m, s in closing.items())
+        full_debate = debate_history + "\n\n" + closing_parts
+
+        # Judge evaluates the complete debate
         self.token_update.emit(f"\n\n=== Judge: {cfg['judge_model']} ===\n\n")
         judge_prompt = DEBATE_JUDGE_PROMPT.format(
-            question=cfg["question"], responses=formatted, context=context
+            question=cfg["question"], responses=full_debate, context=context
         )
         judge_output = self._stream(cfg["judge_model"], judge_prompt, temperature=0.3)
         if self._stopped:
             return
         self.stage_complete.emit("judge", judge_output)
 
-        # Stage 3: Final
+        # Final synthesizes
         self.token_update.emit(f"\n\n=== Final: {cfg['final_model']} ===\n\n")
         final_prompt = DEBATE_FINAL_PROMPT.format(
             question=cfg["question"],
-            responses=formatted,
+            responses=full_debate,
             judge_output=judge_output,
             context=context,
         )

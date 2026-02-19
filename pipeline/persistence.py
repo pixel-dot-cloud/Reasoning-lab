@@ -56,17 +56,12 @@ def delete_chat(chat_id: str):
         os.remove(path)
 
 
-def new_chat_record(config: dict) -> dict:
+def new_chat_record() -> dict:
     now = datetime.now()
-    clean_config = {
-        k: v for k, v in config.items()
-        if k not in ("chat_context", "question")
-    }
     return {
         "id": str(uuid.uuid4()),
         "name": now.strftime("Chat \u2013 %b %d, %H:%M"),
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
-        "config": clean_config,
         "messages": [],
     }

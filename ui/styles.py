@@ -37,10 +37,11 @@ QTextEdit {
     border-radius: 4px; padding: 6px; color: #4c4f69;
     selection-background-color: #bcc0cc;
 }
-QTextEdit#chatArea {
+QScrollArea#chatArea {
     background-color: #eff1f5; border: 1px solid #ccd0da;
-    border-radius: 8px; padding: 10px; font-size: 14px;
+    border-radius: 8px;
 }
+QWidget#chatContainer { background-color: #eff1f5; }
 QTextEdit#reasoningArea {
     background-color: #2a2b3d; border: 1px solid #45475a;
     border-radius: 6px; padding: 8px; color: #bac2de;
@@ -133,10 +134,11 @@ QTextEdit {
     border-radius: 4px; padding: 6px; color: #3b3f51;
     selection-background-color: #a8acba;
 }
-QTextEdit#chatArea {
+QScrollArea#chatArea {
     background-color: #c8ccd6; border: 1px solid #b8bcca;
-    border-radius: 8px; padding: 10px; font-size: 14px;
+    border-radius: 8px;
 }
+QWidget#chatContainer { background-color: #c8ccd6; }
 QTextEdit#reasoningArea {
     background-color: #282a36; border: 1px solid #44475a;
     border-radius: 6px; padding: 8px; color: #b8c0d8;
@@ -229,10 +231,11 @@ QTextEdit {
     border-radius: 4px; padding: 6px; color: #cdd6f4;
     selection-background-color: #585b70;
 }
-QTextEdit#chatArea {
+QScrollArea#chatArea {
     background-color: #181825; border: 1px solid #313244;
-    border-radius: 8px; padding: 10px; font-size: 14px;
+    border-radius: 8px;
 }
+QWidget#chatContainer { background-color: #181825; }
 QTextEdit#reasoningArea {
     background-color: #11111b; border: 1px solid #313244;
     border-radius: 6px; padding: 8px; color: #a6adc8;
@@ -325,10 +328,11 @@ QTextEdit {
     border-radius: 4px; padding: 6px; color: #d4d4e0;
     selection-background-color: #5a5a6a;
 }
-QTextEdit#chatArea {
+QScrollArea#chatArea {
     background-color: #242434; border: 1px solid #363646;
-    border-radius: 8px; padding: 10px; font-size: 14px;
+    border-radius: 8px;
 }
+QWidget#chatContainer { background-color: #242434; }
 QTextEdit#reasoningArea {
     background-color: #1a1a28; border: 1px solid #363646;
     border-radius: 6px; padding: 8px; color: #9a9ab0;

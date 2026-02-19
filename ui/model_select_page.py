@@ -142,7 +142,7 @@ class ModelSelectPage(QWidget):
         else:
             self.single_radio.setChecked(True)
         self._pending_settings = s
-        if self.reasoning_combo.count() == 0 and self.refresh_btn.isEnabled():
+        if self.refresh_btn.isEnabled():
             self.fetch_models()
 
     def _update_mode_visibility(self):

@@ -1,3 +1,5 @@
+import os
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -7,13 +9,16 @@ from PySide6.QtWidgets import (
     QPushButton,
     QLabel,
     QMessageBox,
+    QInputDialog,
+    QScrollArea,
     QSplitter,
     QFrame,
     QListWidget,
     QListWidgetItem,
+    QFileDialog,
 )
 from PySide6.QtGui import QFont, QTextCursor
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from pipeline.controller import PipelineThread
 from pipeline.persistence import list_chats, save_chat, delete_chat, new_chat_record
 from ui.styles import get_theme, DEFAULT_THEME
@@ -31,6 +36,8 @@ class RunPage(QWidget):
         self._chat_history = []
         self._current_chat = None
         self._saved_chats = []
+        self._attached_file = None
+        self._streaming_label = None
 
         layout = QVBoxLayout()
         layout.setSpacing(6)
@@ -91,19 +98,37 @@ class RunPage(QWidget):
         self.chats_list.itemClicked.connect(self._open_chat_from_panel)
         chats_panel_layout.addWidget(self.chats_list, 1)
 
+        chat_actions = QHBoxLayout()
+        chat_actions.setSpacing(4)
+
+        self.rename_chat_btn = QPushButton("Rename")
+        self.rename_chat_btn.clicked.connect(self._rename_chat_from_panel)
+        chat_actions.addWidget(self.rename_chat_btn)
+
         self.delete_chat_btn = QPushButton("Delete")
         self.delete_chat_btn.clicked.connect(self._delete_chat_from_panel)
-        chats_panel_layout.addWidget(self.delete_chat_btn)
+        chat_actions.addWidget(self.delete_chat_btn)
+
+        chats_panel_layout.addLayout(chat_actions)
 
         self.chats_panel.setLayout(chats_panel_layout)
         self.chats_panel.setVisible(False)
         self.splitter.addWidget(self.chats_panel)
 
-        # Chat area
-        self.chat_area = QTextEdit()
-        self.chat_area.setReadOnly(True)
-        self.chat_area.setObjectName("chatArea")
-        self.splitter.addWidget(self.chat_area)
+        # Chat area — scroll area with individual message widgets
+        self.chat_scroll = QScrollArea()
+        self.chat_scroll.setObjectName("chatArea")
+        self.chat_scroll.setWidgetResizable(True)
+        self.chat_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.chat_container = QWidget()
+        self.chat_container.setObjectName("chatContainer")
+        self.chat_layout = QVBoxLayout(self.chat_container)
+        self.chat_layout.setAlignment(Qt.AlignTop)
+        self.chat_layout.setSpacing(4)
+        self.chat_layout.setContentsMargins(8, 8, 8, 8)
+        self.chat_scroll.setWidget(self.chat_container)
+        self.splitter.addWidget(self.chat_scroll)
 
         # Reasoning panel
         reasoning_frame = QFrame()
@@ -137,6 +162,11 @@ class RunPage(QWidget):
         input_bar = QHBoxLayout()
         input_bar.setSpacing(6)
 
+        self.attach_btn = QPushButton("Attach")
+        self.attach_btn.setObjectName("attachBtn")
+        self.attach_btn.clicked.connect(self._attach_file)
+        input_bar.addWidget(self.attach_btn)
+
         self.input_field = QLineEdit()
         self.input_field.setObjectName("chatInput")
         self.input_field.setPlaceholderText("Type your question and press Enter...")
@@ -155,6 +185,12 @@ class RunPage(QWidget):
         input_bar.addWidget(self.stop_btn)
 
         layout.addLayout(input_bar)
+
+        # --- Attachment label ---
+        self.attachment_label = QLabel("")
+        self.attachment_label.setObjectName("attachmentLabel")
+        self.attachment_label.setVisible(False)
+        layout.addWidget(self.attachment_label)
         self.setLayout(layout)
 
     # ------------------------------------------------------------------ theme
@@ -189,21 +225,22 @@ class RunPage(QWidget):
 
     def load_chat(self, chat: dict):
         self._current_chat = chat
-        self.config = dict(chat["config"])
-        self.config["question"] = ""
         self._chat_history = list(chat.get("messages", []))
         self._final_buffer = ""
         self._streaming_final = False
+        self._streaming_label = None
         self._rebuild_chat()
         self.reasoning_area.clear()
         self.status_label.setText("Ready")
-        self._update_mode_label(self.config)
+        if self.config:
+            self._update_mode_label(self.config)
 
     def _new_chat(self):
         self._current_chat = None
         self._chat_history = []
         self._final_buffer = ""
         self._streaming_final = False
+        self._streaming_label = None
         self._rebuild_chat()
         self.reasoning_area.clear()
         self.status_label.setText("Ready")
@@ -243,6 +280,24 @@ class RunPage(QWidget):
         if chat:
             self.load_chat(chat)
 
+    def _rename_chat_from_panel(self):
+        item = self.chats_list.currentItem()
+        if not item:
+            return
+        cid = item.data(Qt.UserRole)
+        chat = next((c for c in self._saved_chats if c["id"] == cid), None)
+        if not chat:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Chat", "New name:", text=chat["name"]
+        )
+        if ok and new_name.strip():
+            chat["name"] = new_name.strip()
+            save_chat(chat)
+            if self._current_chat and self._current_chat.get("id") == cid:
+                self._current_chat["name"] = chat["name"]
+            self._reload_chats_panel()
+
     def _delete_chat_from_panel(self):
         item = self.chats_list.currentItem()
         if not item:
@@ -261,50 +316,126 @@ class RunPage(QWidget):
             delete_chat(cid)
             self._reload_chats_panel()
 
-    # -------------------------------------------------------------- chat HTML
+    # ---------------------------------------------------------- chat widgets
 
-    def _escape(self, text):
-        return (
-            text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br>")
+    def _clear_chat_layout(self):
+        while self.chat_layout.count():
+            item = self.chat_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+    def _make_bubble(self, text, is_user):
+        """Return (row_widget, label, bubble_layout) for a message bubble."""
+        bg = self._theme["user_bubble_bg" if is_user else "bot_bubble_bg"]
+        fg = self._theme["user_bubble_fg" if is_user else "bot_bubble_fg"]
+
+        bubble = QFrame()
+        bubble.setStyleSheet(
+            f"QFrame {{ background-color: {bg}; border-radius: 8px; }}"
+            f" QLabel {{ color: {fg}; background: transparent; font-size: 14px; }}"
+            f" QPushButton {{ background: transparent; border: none;"
+            f" color: {fg}; font-size: 11px; padding: 0 2px; font-weight: normal; }}"
+            f" QPushButton:hover {{ text-decoration: underline; }}"
         )
+        bubble_layout = QVBoxLayout(bubble)
+        bubble_layout.setContentsMargins(10, 7, 10, 7)
+        bubble_layout.setSpacing(3)
 
-    def _build_chat_html(self):
-        parts = []
-        for msg in self._chat_history:
-            escaped = self._escape(msg["text"])
-            if msg["role"] == "user":
-                bg = self._theme["user_bubble_bg"]
-                fg = self._theme["user_bubble_fg"]
-                parts.append(
-                    f'<p align="right" style="margin: 6px 4px;">'
-                    f'<span style="background-color: {bg}; color: {fg}; '
-                    f'padding: 8px 14px;">{escaped}</span></p>'
-                )
-            else:
-                bg = self._theme["bot_bubble_bg"]
-                fg = self._theme["bot_bubble_fg"]
-                parts.append(
-                    f'<p align="left" style="margin: 6px 4px;">'
-                    f'<span style="background-color: {bg}; color: {fg}; '
-                    f'padding: 8px 14px;">{escaped}</span></p>'
-                )
-        return "".join(parts)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setMinimumWidth(60)
+        bubble_layout.addWidget(label)
+
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        if is_user:
+            row_layout.addStretch(3)
+            row_layout.addWidget(bubble, 7)
+        else:
+            row_layout.addWidget(bubble, 7)
+            row_layout.addStretch(3)
+
+        return row, label, bubble_layout
+
+    def _add_message_widget(self, index, msg):
+        is_user = msg["role"] == "user"
+        row, label, bubble_layout = self._make_bubble(msg["text"], is_user)
+
+        if is_user:
+            edit_btn = QPushButton("edit")
+            edit_btn.setFlat(True)
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.clicked.connect(lambda checked, idx=index: self._edit_message(idx))
+            bubble_layout.addWidget(edit_btn, 0, Qt.AlignRight)
+
+        self.chat_layout.addWidget(row)
+
+    def _add_streaming_widget(self):
+        """Add a bot bubble for the in-progress response and return its label."""
+        row, label, _ = self._make_bubble("", is_user=False)
+        self.chat_layout.addWidget(row)
+        return label
 
     def _rebuild_chat(self):
-        self.chat_area.setHtml(self._build_chat_html())
-        self.chat_area.moveCursor(QTextCursor.End)
+        self._streaming_label = None
+        self._clear_chat_layout()
+        for i, msg in enumerate(self._chat_history):
+            self._add_message_widget(i, msg)
+        self._scroll_to_bottom()
 
-    def get_chat_context(self):
-        if not self._chat_history:
-            return ""
-        lines = []
-        for msg in self._chat_history:
-            role = "User" if msg["role"] == "user" else "Assistant"
-            lines.append(f"{role}: {msg['text']}")
-        return "\n".join(lines)
+    def _scroll_to_bottom(self):
+        QTimer.singleShot(0, lambda: self.chat_scroll.verticalScrollBar().setValue(
+            self.chat_scroll.verticalScrollBar().maximum()
+        ))
+
+    # ------------------------------------------------------------ edit message
+
+    def _edit_message(self, index):
+        msg = self._chat_history[index]
+        new_text, ok = QInputDialog.getMultiLineText(
+            self, "Edit Message", "Edit your message:", msg["text"]
+        )
+        if not ok or not new_text.strip():
+            return
+        # Truncate history from this point and re-run from the edited message
+        self._chat_history = self._chat_history[:index]
+        if self._current_chat is not None:
+            self._current_chat["messages"] = list(self._chat_history)
+            save_chat(self._current_chat)
+        self._rebuild_chat()
+        self.input_field.setText(new_text.strip())
+        self.run_pipeline()
+
+    # ----------------------------------------------------------- file attachment
+
+    def _attach_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Attach File", "",
+            "Text files (*.txt *.md *.py *.js *.ts *.json *.csv *.html *.xml *.yaml *.yml *.toml *.ini *.cfg *.log);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except Exception as e:
+            QMessageBox.warning(self, "File Error", f"Could not read file:\n{e}")
+            return
+        name = os.path.basename(path)
+        self._attached_file = {"name": name, "content": content}
+        self.attachment_label.setText(f"Attached: {name}  [click to remove]")
+        self.attachment_label.setVisible(True)
+        self.attachment_label.mousePressEvent = lambda _: self._clear_attachment()
+
+    def _clear_attachment(self):
+        self._attached_file = None
+        self.attachment_label.setText("")
+        self.attachment_label.setVisible(False)
 
     # --------------------------------------------------------------- pipeline
 
@@ -318,16 +449,28 @@ class RunPage(QWidget):
 
         self.config["question"] = question
         self.config["chat_context"] = self.get_chat_context()
+        self.config["file_context"] = (
+            f"[File: {self._attached_file['name']}]\n{self._attached_file['content']}"
+            if self._attached_file else ""
+        )
         self.input_field.clear()
         self.reasoning_area.clear()
         self._final_buffer = ""
         self._streaming_final = False
+        self._streaming_label = None
 
-        self._chat_history.append({"role": "user", "text": question})
-        self._rebuild_chat()
+        user_text = question
+        if self._attached_file:
+            user_text = f"[{self._attached_file['name']}] {question}"
+        self._chat_history.append({"role": "user", "text": user_text})
+        self._clear_attachment()
+
+        # Add the user bubble immediately without full rebuild
+        self._add_message_widget(len(self._chat_history) - 1, self._chat_history[-1])
+        self._scroll_to_bottom()
 
         if self._current_chat is None:
-            self._current_chat = new_chat_record(self.config)
+            self._current_chat = new_chat_record()
         self._current_chat["messages"] = list(self._chat_history)
         save_chat(self._current_chat)
 
@@ -336,6 +479,7 @@ class RunPage(QWidget):
         self.back_btn.setEnabled(False)
         self.models_btn.setEnabled(False)
         self.input_field.setEnabled(False)
+        self.attach_btn.setEnabled(False)
         self.status_label.setText("Running pipeline...")
 
         self.thread = PipelineThread(self.config)
@@ -362,23 +506,16 @@ class RunPage(QWidget):
         self._final_buffer += text
         if not self._streaming_final:
             self._streaming_final = True
-        html = self._build_chat_html()
-        bg = self._theme["bot_bubble_bg"]
-        fg = self._theme["bot_bubble_fg"]
-        escaped = self._escape(self._final_buffer)
-        html += (
-            f'<p align="left" style="margin: 6px 4px;">'
-            f'<span style="background-color: {bg}; color: {fg}; '
-            f'padding: 8px 14px;">{escaped}</span></p>'
-        )
-        self.chat_area.setHtml(html)
-        self.chat_area.moveCursor(QTextCursor.End)
+            self._streaming_label = self._add_streaming_widget()
+        self._streaming_label.setText(self._final_buffer)
+        self._scroll_to_bottom()
 
     def _on_stage_complete(self, stage, _text):
         self.status_label.setText(f"Completed: {stage}")
 
     def _on_finished(self, final_answer):
         self._streaming_final = False
+        self._streaming_label = None
         self._chat_history.append({"role": "bot", "text": final_answer})
         self._rebuild_chat()
         self._reset_controls()
@@ -395,11 +532,12 @@ class RunPage(QWidget):
 
     def _on_error(self, error_msg):
         self._streaming_final = False
+        self._streaming_label = None
         if self._final_buffer:
             self._chat_history.append(
                 {"role": "bot", "text": self._final_buffer + "\n[interrupted]"}
             )
-            self._rebuild_chat()
+        self._rebuild_chat()
         self._reset_controls()
         self.status_label.setText("Error")
 
@@ -411,6 +549,7 @@ class RunPage(QWidget):
 
     def _on_thread_finished(self):
         if self.thread is not None:
+            self._streaming_label = None
             self._reset_controls()
             self.status_label.setText("Stopped")
 
@@ -420,5 +559,15 @@ class RunPage(QWidget):
         self.back_btn.setEnabled(True)
         self.models_btn.setEnabled(True)
         self.input_field.setEnabled(True)
+        self.attach_btn.setEnabled(True)
         self.input_field.setFocus()
         self.thread = None
+
+    def get_chat_context(self):
+        if not self._chat_history:
+            return ""
+        lines = []
+        for msg in self._chat_history:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            lines.append(f"{role}: {msg['text']}")
+        return "\n".join(lines)

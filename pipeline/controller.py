@@ -169,10 +169,14 @@ class PipelineThread(QThread):
                 self.error_signal.emit(str(e))
 
     def _get_context_block(self):
-        ctx = self.config.get("chat_context", "")
-        if ctx:
-            return f"\nConversation so far:\n{ctx}\n"
-        return ""
+        parts = []
+        file_ctx = self.config.get("file_context", "")
+        if file_ctx:
+            parts.append(f"\nAttached file:\n{file_ctx}\n")
+        chat_ctx = self.config.get("chat_context", "")
+        if chat_ctx:
+            parts.append(f"\nConversation so far:\n{chat_ctx}\n")
+        return "".join(parts)
 
     # --- Single mode: Reasoning -> Judge complements -> Final synthesizes ---
 
